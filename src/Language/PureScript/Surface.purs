@@ -287,4 +287,4 @@ convertBinder b = Binder { annotation, kind }
         { head: convertBinder head
         , tail: convertTail <$> tail
         }
-    _ -> unsafeCrashWith "Unimplemented!"
+    CST.BinderError v -> absurd v
