@@ -168,7 +168,9 @@ convertExpr e = Expr { annotation, exprKind }
       , spine: NonEmptyArray.cons' (convertExpr v) []
       }
     CST.ExprRecordAccessor { expr, path: Separated { head: Name { name }, tail } } -> do
-      let convertTail = map (Tuple.snd >>> unwrap >>> _.name)
+      let
+        convertTail :: Array (Tuple _ (Name Label)) -> Array Label 
+        convertTail = map (Tuple.snd >>> unwrap >>> _.name)
       ExprRecordAccessor
         { record: convertExpr expr
         , path: NonEmptyArray.cons' name $ convertTail tail
