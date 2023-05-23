@@ -10,8 +10,10 @@ import Prelude
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
+import Data.Bifunctor (bimap)
 import Data.Maybe (fromMaybe)
 import Data.Newtype (unwrap)
+import Data.Tuple (Tuple)
 import Data.Tuple as Tuple
 import Language.PureScript.Annotation (Annotation)
 import Language.PureScript.Constants as Constants
@@ -36,6 +38,10 @@ data ExprKind
   | ExprApp AppFields
   -- A record access e.g. x.foo.bar
   | ExprRecordAccessor RecordAccessorFields
+  -- A chain of binary operations e.g. 1 + 2 * 3
+  | ExprOp OpFields
+  -- A chain of infix applications e.g. a `foo` b `foo` c
+  | ExprInfix InfixFields
   -- A typed hole e.g. ?hello
   | ExprHole Ident
   -- Marks a section expression
@@ -79,6 +85,16 @@ type AppFields =
 type RecordAccessorFields =
   { record :: Expr
   , path :: NonEmptyArray Label
+  }
+
+type OpFields =
+  { head :: Expr
+  , tail :: NonEmptyArray (Tuple (QualifiedName Operator) Expr)
+  }
+
+type InfixFields =
+  { head :: Expr
+  , tail :: NonEmptyArray (Tuple Expr Expr)
   }
 
 newtype Expr = Expr
@@ -128,8 +144,22 @@ convertExpr e = Expr { annotation, exprKind }
     CST.ExprSection _ -> ExprSection
     CST.ExprParens (Wrapped { value }) -> ExprParens $ convertExpr value
     CST.ExprTyped _ _ _ -> unsafeCrashWith "Unimplemented!"
-    CST.ExprInfix _ _ -> unsafeCrashWith "Unimplemented!"
-    CST.ExprOp _ _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprInfix head tail -> do
+      let
+        convertTail :: Tuple (Wrapped (CST.Expr Void)) (CST.Expr Void) -> Tuple Expr Expr
+        convertTail = bimap (unwrap >>> _.value >>> convertExpr) convertExpr
+      ExprInfix
+        { head: convertExpr head
+        , tail: convertTail <$> tail
+        }
+    CST.ExprOp head tail -> do
+      let
+        convertTail :: Tuple (CST.QualifiedName Operator) (CST.Expr Void) -> Tuple (QualifiedName Operator) Expr
+        convertTail = bimap convertQualifiedName convertExpr
+      ExprOp
+        { head: convertExpr head
+        , tail: convertTail <$> tail
+        }
     CST.ExprNegate n v -> ExprApp
       { function: Expr
           { annotation: { range: n.range }
