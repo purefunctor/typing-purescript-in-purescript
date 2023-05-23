@@ -9,12 +9,15 @@ import Prelude
 
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
+import Data.Array.NonEmpty as NonEmptyArray
 import Data.Maybe (fromMaybe)
 import Data.Tuple as Tuple
 import Language.PureScript.Annotation (Annotation)
+import Language.PureScript.Constants as Constants
+import Language.PureScript.Names (QualifiedName, convertQualifiedName)
 import Partial.Unsafe (unsafeCrashWith)
 import PureScript.CST.Range (rangeOf)
-import PureScript.CST.Types (Ident, IntValue, Label, Name(..), Proper, QualifiedName, RecordLabeled, Separated(..), Wrapped(..))
+import PureScript.CST.Types (Ident, IntValue, Label, Name(..), Proper, RecordLabeled, Separated(..), Wrapped(..))
 import PureScript.CST.Types as CST
 
 data ExprKind
@@ -82,8 +85,8 @@ convertExpr e = Expr { annotation, exprKind }
   exprKind :: ExprKind
   exprKind = case e of
     CST.ExprHole n -> ExprHole n
-    CST.ExprConstructor c -> ExprConstructor c
-    CST.ExprIdent i -> ExprVariable i
+    CST.ExprConstructor c -> ExprConstructor $ convertQualifiedName c
+    CST.ExprIdent i -> ExprVariable $ convertQualifiedName i
     CST.ExprBoolean _ b -> ExprLiteral $ BooleanLiteral b
     CST.ExprChar _ c -> ExprLiteral $ CharLiteral c
     CST.ExprString _ s -> ExprLiteral $ StringLiteral s
@@ -117,7 +120,13 @@ convertExpr e = Expr { annotation, exprKind }
     CST.ExprInfix _ _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprOp _ _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprOpName _ -> unsafeCrashWith "Unimplemented!"
-    CST.ExprNegate _ _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprNegate n v -> ExprApp
+      { function: Expr
+          { annotation: { range: n.range }
+          , exprKind: ExprVariable Constants.preludeNegate
+          }
+      , spine: NonEmptyArray.cons' (convertExpr v) []
+      }
     CST.ExprRecordAccessor _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprRecordUpdate _ _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprApp function spine -> ExprApp
