@@ -31,7 +31,7 @@ data ExprKind
   -- Operator identifier e.g. (+)
   | ExprOperator (QualifiedName Operator)
   -- A literal value
-  | ExprLiteral LiteralKind
+  | ExprLiteral (LiteralKind Expr)
   -- A ternary expression
   | ExprTernary TernaryFields
   -- A function application e.g. f a b
@@ -41,7 +41,7 @@ data ExprKind
   -- A record update e.g. foo { bar = 1 }, foo { bar { baz = 0 } }
   | ExprRecordUpdate RecordUpdateFields
   -- A chain of binary operations e.g. 1 + 2 * 3
-  | ExprOp OpFields
+  | ExprOp (OpFields Expr)
   -- A chain of infix applications e.g. a `foo` b `foo` c
   | ExprInfix InfixFields
   -- A typed hole e.g. ?hello
@@ -51,7 +51,7 @@ data ExprKind
   -- A parenthesized expression
   | ExprParens Expr
 
-data LiteralKind
+data LiteralKind e
   -- `true` or `false`
   = BooleanLiteral Boolean
   -- 'a'
@@ -63,15 +63,15 @@ data LiteralKind
   -- 42.0
   | NumberLiteral Number
   -- ["hello!", 42, 42.0, 'a']
-  | ArrayLiteral (Array Expr)
+  | ArrayLiteral (Array e)
   -- { a, b: "hello!" }
-  | RecordLiteral (Array RecordFieldKind)
+  | RecordLiteral (Array (RecordFieldKind e))
 
-data RecordFieldKind
+data RecordFieldKind e
   -- { a }
   = RecordPun Ident
   -- { a: 42 }
-  | RecordField Label Expr
+  | RecordField Label e
 
 type TernaryFields =
   { if :: Expr
@@ -98,9 +98,9 @@ data RecordUpdate
   = RecordUpdateLeaf Label Expr
   | RecordUpdateBranch Label RecordUpdate
 
-type OpFields =
-  { head :: Expr
-  , tail :: NonEmptyArray (Tuple (QualifiedName Operator) Expr)
+type OpFields e =
+  { head :: e
+  , tail :: NonEmptyArray (Tuple (QualifiedName Operator) e)
   }
 
 type InfixFields =
@@ -143,12 +143,12 @@ convertExpr e = Expr { annotation, exprKind }
       ExprLiteral $ ArrayLiteral $ fromMaybe [] $ convertArray <$> value
     CST.ExprRecord (Wrapped { value }) -> do
       let
-        convertField :: RecordLabeled (CST.Expr Void) -> RecordFieldKind
+        convertField :: RecordLabeled (CST.Expr Void) -> RecordFieldKind Expr
         convertField = case _ of
           CST.RecordPun (Name { name }) -> RecordPun name
           CST.RecordField (Name { name }) _ v -> RecordField name $ convertExpr v
 
-        convertRecord :: Separated (RecordLabeled (CST.Expr Void)) -> Array RecordFieldKind
+        convertRecord :: Separated (RecordLabeled (CST.Expr Void)) -> Array (RecordFieldKind Expr)
         convertRecord (Separated { head, tail }) =
           Array.cons (convertField head) (convertField <<< Tuple.snd <$> tail)
       ExprLiteral $ RecordLiteral $ fromMaybe [] $ convertRecord <$> value
@@ -165,7 +165,9 @@ convertExpr e = Expr { annotation, exprKind }
         }
     CST.ExprOp head tail -> do
       let
-        convertTail :: Tuple (CST.QualifiedName Operator) (CST.Expr Void) -> Tuple (QualifiedName Operator) Expr
+        convertTail
+          :: Tuple (CST.QualifiedName Operator) (CST.Expr Void)
+          -> Tuple (QualifiedName Operator) Expr
         convertTail = bimap convertQualifiedName convertExpr
       ExprOp
         { head: convertExpr head
@@ -180,7 +182,7 @@ convertExpr e = Expr { annotation, exprKind }
       }
     CST.ExprRecordAccessor { expr, path: Separated { head: Name { name }, tail } } -> do
       let
-        convertTail :: Array (Tuple _ (Name Label)) -> Array Label 
+        convertTail :: Array (Tuple _ (Name Label)) -> Array Label
         convertTail = map (Tuple.snd >>> unwrap >>> _.name)
       ExprRecordAccessor
         { record: convertExpr expr
@@ -191,7 +193,8 @@ convertExpr e = Expr { annotation, exprKind }
         convertUpdate :: Wrapped (Separated (CST.RecordUpdate Void)) -> RecordUpdate
         convertUpdate (Wrapped { value: Separated { head } }) = case head of
           CST.RecordUpdateLeaf (Name { name }) _ value -> RecordUpdateLeaf name $ convertExpr value
-          CST.RecordUpdateBranch (Name { name }) branch -> RecordUpdateBranch name $ convertUpdate branch
+          CST.RecordUpdateBranch (Name { name }) branch -> RecordUpdateBranch name $ convertUpdate
+            branch
       ExprRecordUpdate
         { record: convertExpr expr
         , update: convertUpdate update
@@ -204,3 +207,75 @@ convertExpr e = Expr { annotation, exprKind }
     CST.ExprDo _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprAdo _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprError v -> absurd v
+
+data BinderKind
+  -- Matches any pattern
+  = BinderWildcard
+  -- Matches and binds a pattern
+  | BinderVar Ident
+  -- Matches a constructor
+  | BinderConstructor (QualifiedName Proper) (Array Binder)
+  -- Matches and binds a pattern to a name
+  | BinderNamed Ident Binder
+  -- Matches a literal pattern
+  | BinderLiteral (LiteralKind Binder)
+  -- Matches a parenthesized pattern
+  | BinderParens Binder
+  -- Matches a typed pattern
+  | BinderTyped Binder Void
+  -- Matches a chain of binary operations
+  | BinderOp (OpFields Binder)
+
+newtype Binder = Binder
+  { annotation :: Annotation
+  , kind :: BinderKind
+  }
+
+convertBinder :: CST.Binder Void -> Binder
+convertBinder b = Binder { annotation, kind }
+  where
+  annotation :: Annotation
+  annotation = { range: rangeOf b }
+
+  kind :: BinderKind
+  kind = case b of
+    CST.BinderWildcard _ -> BinderWildcard
+    CST.BinderVar (Name { name }) -> BinderVar name
+    CST.BinderNamed (Name { name }) _ binder -> BinderNamed name $ convertBinder binder
+    CST.BinderConstructor name fields ->
+      BinderConstructor (convertQualifiedName name) (convertBinder <$> fields)
+    CST.BinderBoolean _ v -> BinderLiteral $ BooleanLiteral v
+    CST.BinderChar _ c -> BinderLiteral $ CharLiteral c
+    CST.BinderString _ s -> BinderLiteral $ StringLiteral s
+    CST.BinderInt _ _ i -> BinderLiteral $ IntLiteral i
+    CST.BinderNumber _ _ n -> BinderLiteral $ NumberLiteral n
+    CST.BinderArray (Wrapped { value }) -> do
+      let 
+        convertArray :: Separated (CST.Binder Void) -> Array Binder
+        convertArray (Separated { head, tail }) =
+          Array.cons (convertBinder head) (convertBinder <<< Tuple.snd <$> tail)
+      BinderLiteral $ ArrayLiteral $ fromMaybe [] $ convertArray <$> value
+    CST.BinderRecord (Wrapped { value }) -> do
+      let
+        convertField :: RecordLabeled (CST.Binder Void) -> RecordFieldKind Binder
+        convertField = case _ of
+          CST.RecordPun (Name { name }) -> RecordPun name
+          CST.RecordField (Name { name }) _ v -> RecordField name $ convertBinder v
+
+        convertRecord :: Separated (RecordLabeled (CST.Binder Void)) -> Array (RecordFieldKind Binder)
+        convertRecord (Separated { head, tail }) =
+          Array.cons (convertField head) (convertField <<< Tuple.snd <$> tail)
+      BinderLiteral $ RecordLiteral $ fromMaybe [] $ convertRecord <$> value
+    CST.BinderParens (Wrapped { value }) -> BinderParens $ convertBinder value
+    CST.BinderTyped _ _ _ -> unsafeCrashWith "Unimplemented!"
+    CST.BinderOp head tail -> do
+      let
+        convertTail
+          :: Tuple (CST.QualifiedName Operator) (CST.Binder Void)
+          -> Tuple (QualifiedName Operator) Binder
+        convertTail = bimap convertQualifiedName convertBinder
+      BinderOp
+        { head: convertBinder head
+        , tail: convertTail <$> tail
+        }
+    _ -> unsafeCrashWith "Unimplemented!"
