@@ -102,7 +102,9 @@ type RecordUpdateFields =
   }
 
 data RecordUpdate
+  -- r { foo = value }
   = RecordUpdateLeaf Label Expr
+  -- r { foo { bar = value } }
   | RecordUpdateBranch Label RecordUpdate
 
 type OpFields e =
