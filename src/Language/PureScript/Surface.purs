@@ -35,7 +35,7 @@ data ExprKind
   -- A function application e.g. f a b
   | ExprApp AppFields
   -- A record access e.g. x.foo.bar
-  | ExprRecordAccess AccessFields
+  | ExprRecordAccessor RecordAccessorFields
   -- A typed hole e.g. ?hello
   | ExprHole Ident
   -- Marks a section expression
@@ -76,7 +76,7 @@ type AppFields =
   , spine :: NonEmptyArray Expr
   }
 
-type AccessFields =
+type RecordAccessorFields =
   { record :: Expr
   , path :: NonEmptyArray Label
   }
@@ -139,7 +139,7 @@ convertExpr e = Expr { annotation, exprKind }
       }
     CST.ExprRecordAccessor { expr, path: Separated { head: Name { name }, tail } } -> do
       let convertTail = map (Tuple.snd >>> unwrap >>> _.name)
-      ExprRecordAccess
+      ExprRecordAccessor
         { record: convertExpr expr
         , path: NonEmptyArray.cons' name $ convertTail tail
         }
