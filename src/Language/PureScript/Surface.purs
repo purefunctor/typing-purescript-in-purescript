@@ -11,6 +11,7 @@ import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Maybe (fromMaybe)
+import Data.Newtype (unwrap)
 import Data.Tuple as Tuple
 import Language.PureScript.Annotation (Annotation)
 import Language.PureScript.Constants as Constants
@@ -29,8 +30,10 @@ data ExprKind
   | ExprLiteral LiteralKind
   -- A ternary expression
   | ExprTernary TernaryFields
-  -- A function application
+  -- A function application e.g. f a b
   | ExprApp AppFields
+  -- A record access e.g. x.foo.bar
+  | ExprRecordAccess AccessFields
   -- A typed hole e.g. ?hello
   | ExprHole (Name Ident)
   -- Marks a section expression
@@ -69,6 +72,11 @@ type TernaryFields =
 type AppFields =
   { function :: Expr
   , spine :: NonEmptyArray Expr
+  }
+
+type AccessFields =
+  { record :: Expr
+  , path :: NonEmptyArray Label
   }
 
 newtype Expr = Expr
@@ -127,7 +135,12 @@ convertExpr e = Expr { annotation, exprKind }
           }
       , spine: NonEmptyArray.cons' (convertExpr v) []
       }
-    CST.ExprRecordAccessor _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprRecordAccessor { expr, path: Separated { head: Name { name }, tail } } -> do
+      let convertTail = map (Tuple.snd >>> unwrap >>> _.name)
+      ExprRecordAccess
+        { record: convertExpr expr
+        , path: NonEmptyArray.cons' name $ convertTail tail
+        }
     CST.ExprRecordUpdate _ _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprApp function spine -> ExprApp
       { function: convertExpr function, spine: convertExpr <$> spine }
