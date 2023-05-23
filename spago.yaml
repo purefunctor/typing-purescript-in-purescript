@@ -1,0 +1,6 @@
+package:
+  name: purs-in-purs
+  dependencies: [ effect, language-cst-parser, prelude ]
+workspace:
+  package_set:
+    registry: 20.0.1
