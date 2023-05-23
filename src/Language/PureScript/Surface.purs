@@ -18,7 +18,7 @@ import Language.PureScript.Constants as Constants
 import Language.PureScript.Names (QualifiedName, convertQualifiedName)
 import Partial.Unsafe (unsafeCrashWith)
 import PureScript.CST.Range (rangeOf)
-import PureScript.CST.Types (Ident, IntValue, Label, Name(..), Proper, RecordLabeled, Separated(..), Wrapped(..))
+import PureScript.CST.Types (Ident, IntValue, Label, Name(..), Operator, Proper, RecordLabeled, Separated(..), Wrapped(..))
 import PureScript.CST.Types as CST
 
 data ExprKind
@@ -26,6 +26,8 @@ data ExprKind
   = ExprConstructor (QualifiedName Proper)
   -- Lowercase identifier e.g. foo
   | ExprVariable (QualifiedName Ident)
+  -- Operator identifier e.g. (+)
+  | ExprOperator (QualifiedName Operator)
   -- A literal value
   | ExprLiteral LiteralKind
   -- A ternary expression
@@ -95,6 +97,7 @@ convertExpr e = Expr { annotation, exprKind }
     CST.ExprHole (Name { name }) -> ExprHole name
     CST.ExprConstructor c -> ExprConstructor $ convertQualifiedName c
     CST.ExprIdent i -> ExprVariable $ convertQualifiedName i
+    CST.ExprOpName o -> ExprOperator $ convertQualifiedName o
     CST.ExprBoolean _ b -> ExprLiteral $ BooleanLiteral b
     CST.ExprChar _ c -> ExprLiteral $ CharLiteral c
     CST.ExprString _ s -> ExprLiteral $ StringLiteral s
@@ -127,7 +130,6 @@ convertExpr e = Expr { annotation, exprKind }
     CST.ExprTyped _ _ _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprInfix _ _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprOp _ _ -> unsafeCrashWith "Unimplemented!"
-    CST.ExprOpName _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprNegate n v -> ExprApp
       { function: Expr
           { annotation: { range: n.range }
