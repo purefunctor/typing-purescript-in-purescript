@@ -36,6 +36,8 @@ data ExprKind
   | ExprTernary TernaryFields
   -- A function application e.g. f a b
   | ExprApp AppFields
+  -- A lambda expression e.g. \x -> x
+  | ExprLambda LambdaFields
   -- A record access e.g. x.foo.bar
   | ExprRecordAccessor RecordAccessorFields
   -- A record update e.g. foo { bar = 1 }, foo { bar { baz = 0 } }
@@ -82,6 +84,11 @@ type TernaryFields =
 type AppFields =
   { function :: Expr
   , spine :: NonEmptyArray Expr
+  }
+
+type LambdaFields =
+  { binders :: NonEmptyArray Binder
+  , expression :: Expr
   }
 
 type RecordAccessorFields =
@@ -201,7 +208,8 @@ convertExpr e = Expr { annotation, exprKind }
         }
     CST.ExprApp function spine -> ExprApp
       { function: convertExpr function, spine: convertExpr <$> spine }
-    CST.ExprLambda _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprLambda { binders, body } -> ExprLambda
+      { binders: convertBinder <$> binders, expression: convertExpr body }
     CST.ExprCase _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprLet _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprDo _ -> unsafeCrashWith "Unimplemented!"
@@ -250,7 +258,7 @@ convertBinder b = Binder { annotation, kind }
     CST.BinderInt _ _ i -> BinderLiteral $ IntLiteral i
     CST.BinderNumber _ _ n -> BinderLiteral $ NumberLiteral n
     CST.BinderArray (Wrapped { value }) -> do
-      let 
+      let
         convertArray :: Separated (CST.Binder Void) -> Array Binder
         convertArray (Separated { head, tail }) =
           Array.cons (convertBinder head) (convertBinder <<< Tuple.snd <$> tail)
@@ -262,7 +270,8 @@ convertBinder b = Binder { annotation, kind }
           CST.RecordPun (Name { name }) -> RecordPun name
           CST.RecordField (Name { name }) _ v -> RecordField name $ convertBinder v
 
-        convertRecord :: Separated (RecordLabeled (CST.Binder Void)) -> Array (RecordFieldKind Binder)
+        convertRecord
+          :: Separated (RecordLabeled (CST.Binder Void)) -> Array (RecordFieldKind Binder)
         convertRecord (Separated { head, tail }) =
           Array.cons (convertField head) (convertField <<< Tuple.snd <$> tail)
       BinderLiteral $ RecordLiteral $ fromMaybe [] $ convertRecord <$> value
