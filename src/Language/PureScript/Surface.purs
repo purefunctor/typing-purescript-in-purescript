@@ -35,7 +35,7 @@ data ExprKind
   -- A record access e.g. x.foo.bar
   | ExprRecordAccess AccessFields
   -- A typed hole e.g. ?hello
-  | ExprHole (Name Ident)
+  | ExprHole Ident
   -- Marks a section expression
   | ExprSection
   -- A parenthesized expression
@@ -92,7 +92,7 @@ convertExpr e = Expr { annotation, exprKind }
 
   exprKind :: ExprKind
   exprKind = case e of
-    CST.ExprHole n -> ExprHole n
+    CST.ExprHole (Name { name }) -> ExprHole name
     CST.ExprConstructor c -> ExprConstructor $ convertQualifiedName c
     CST.ExprIdent i -> ExprVariable $ convertQualifiedName i
     CST.ExprBoolean _ b -> ExprLiteral $ BooleanLiteral b
