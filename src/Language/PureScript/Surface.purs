@@ -38,6 +38,8 @@ data ExprKind
   | ExprApp AppFields
   -- A record access e.g. x.foo.bar
   | ExprRecordAccessor RecordAccessorFields
+  -- A record update e.g. foo { bar = 1 }, foo { bar { baz = 0 } }
+  | ExprRecordUpdate RecordUpdateFields
   -- A chain of binary operations e.g. 1 + 2 * 3
   | ExprOp OpFields
   -- A chain of infix applications e.g. a `foo` b `foo` c
@@ -86,6 +88,15 @@ type RecordAccessorFields =
   { record :: Expr
   , path :: NonEmptyArray Label
   }
+
+type RecordUpdateFields =
+  { record :: Expr
+  , update :: RecordUpdate
+  }
+
+data RecordUpdate
+  = RecordUpdateLeaf Label Expr
+  | RecordUpdateBranch Label RecordUpdate
 
 type OpFields =
   { head :: Expr
@@ -175,7 +186,16 @@ convertExpr e = Expr { annotation, exprKind }
         { record: convertExpr expr
         , path: NonEmptyArray.cons' name $ convertTail tail
         }
-    CST.ExprRecordUpdate _ _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprRecordUpdate expr update -> do
+      let
+        convertUpdate :: Wrapped (Separated (CST.RecordUpdate Void)) -> RecordUpdate
+        convertUpdate (Wrapped { value: Separated { head } }) = case head of
+          CST.RecordUpdateLeaf (Name { name }) _ value -> RecordUpdateLeaf name $ convertExpr value
+          CST.RecordUpdateBranch (Name { name }) branch -> RecordUpdateBranch name $ convertUpdate branch
+      ExprRecordUpdate
+        { record: convertExpr expr
+        , update: convertUpdate update
+        }
     CST.ExprApp function spine -> ExprApp
       { function: convertExpr function, spine: convertExpr <$> spine }
     CST.ExprLambda _ -> unsafeCrashWith "Unimplemented!"
