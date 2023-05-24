@@ -46,6 +46,10 @@ data ExprKind
   | ExprCase CaseFields
   -- A let expression
   | ExprLet LetFields
+  -- A do block
+  | ExprDo (NonEmptyArray DoStatement)
+  -- An ado block
+  | ExprAdo AdoFields
   -- A record access e.g. x.foo.bar
   | ExprRecordAccessor RecordAccessorFields
   -- A record update e.g. foo { bar = 1 }, foo { bar { baz = 0 } }
@@ -141,6 +145,16 @@ newtype GuardedExpr = GuardedExpr
 newtype PatternGuard = PatternGuard
   { binder :: Maybe Binder
   , expression :: Expr
+  }
+
+data DoStatement
+  = DoLet (Array LetBinding)
+  | DoDiscard Expr
+  | DoBind Binder Expr
+
+type AdoFields =
+  { statements :: Array DoStatement
+  , result :: Expr
   }
 
 type RecordAccessorFields =
@@ -284,8 +298,10 @@ convertExpr e = Expr { annotation, exprKind }
         { bindings: convertLetBindings bindings
         , expression: convertExpr body
         }
-    CST.ExprDo _ -> unsafeCrashWith "Unimplemented!"
-    CST.ExprAdo _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprDo { statements } ->
+      ExprDo $ convertDoStatement <$> statements
+    CST.ExprAdo { statements, result } ->
+      ExprAdo { statements: convertDoStatement <$> statements, result: convertExpr result }
     CST.ExprError v -> absurd v
 
   convertLetBindings :: NonEmptyArray (CST.LetBinding Void) -> Array LetBinding
@@ -343,6 +359,13 @@ convertExpr e = Expr { annotation, exprKind }
   convertPatternGuard :: CST.PatternGuard Void -> PatternGuard
   convertPatternGuard (CST.PatternGuard { binder, expr }) = PatternGuard
     { binder: Tuple.fst >>> convertBinder <$> binder, expression: convertExpr expr }
+
+  convertDoStatement :: CST.DoStatement Void -> DoStatement
+  convertDoStatement = case _ of
+    CST.DoLet _ l -> DoLet (convertLetBindings l)
+    CST.DoDiscard s -> DoDiscard (convertExpr s)
+    CST.DoBind b _ s -> DoBind (convertBinder b) (convertExpr s)
+    CST.DoError v -> absurd v
 
 data BinderKind
   -- Matches any pattern
