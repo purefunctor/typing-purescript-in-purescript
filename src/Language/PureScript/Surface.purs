@@ -11,7 +11,7 @@ import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Bifunctor (bimap)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe, fromMaybe)
 import Data.Newtype (unwrap)
 import Data.Tuple (Tuple)
 import Data.Tuple as Tuple
@@ -38,6 +38,8 @@ data ExprKind
   | ExprApp AppFields
   -- A lambda expression e.g. \x -> x
   | ExprLambda LambdaFields
+  -- A let expression
+  | ExprLet LetFields
   -- A record access e.g. x.foo.bar
   | ExprRecordAccessor RecordAccessorFields
   -- A record update e.g. foo { bar = 1 }, foo { bar { baz = 0 } }
@@ -88,6 +90,46 @@ type AppFields =
 
 type LambdaFields =
   { binders :: NonEmptyArray Binder
+  , expression :: Expr
+  }
+
+type LetFields =
+  { bindings :: NonEmptyArray LetBinding
+  , expression :: Expr
+  }
+
+data LetBinding
+  -- A type signature
+  = LetBindingSignature Ident Void
+  -- A value binding
+  | LetBindingName ValueBindingFields
+  -- A pattern
+  | LetBindingPattern Binder Where
+
+type ValueBindingFields =
+  { name :: Ident
+  , binders :: Array Binder
+  , guarded :: Guarded
+  }
+
+newtype Where = Where
+  { expression :: Expr
+  , bindings :: Maybe (NonEmptyArray LetBinding)
+  }
+
+data Guarded
+  -- Always true, no guard
+  = Unconditional Where
+  -- A sequence of guards
+  | Guarded (NonEmptyArray GuardedExpr)
+
+newtype GuardedExpr = GuardedExpr
+  { patterns :: NonEmptyArray PatternGuard
+  , where :: Where
+  }
+
+newtype PatternGuard = PatternGuard
+  { binder :: Maybe Binder
   , expression :: Expr
   }
 
@@ -213,10 +255,40 @@ convertExpr e = Expr { annotation, exprKind }
     CST.ExprLambda { binders, body } -> ExprLambda
       { binders: convertBinder <$> binders, expression: convertExpr body }
     CST.ExprCase _ -> unsafeCrashWith "Unimplemented!"
-    CST.ExprLet _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprLet { bindings, body } ->
+      ExprLet { bindings: convertLetBinding <$> bindings, expression: convertExpr body }
     CST.ExprDo _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprAdo _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprError v -> absurd v
+
+  convertLetBinding :: CST.LetBinding Void -> LetBinding
+  convertLetBinding = case _ of
+    CST.LetBindingSignature _ -> unsafeCrashWith "Unimplemented!"
+    CST.LetBindingName { name: Name { name }, binders, guarded } -> LetBindingName
+      { name, binders: convertBinder <$> binders, guarded: convertGuarded guarded }
+    CST.LetBindingPattern b _ w -> LetBindingPattern (convertBinder b) (convertWhere w)
+    CST.LetBindingError v -> absurd v
+
+  convertWhere :: CST.Where Void -> Where
+  convertWhere (CST.Where { expr, bindings }) = Where
+    { expression: convertExpr expr, bindings: (Tuple.snd >>> map convertLetBinding) <$> bindings }
+
+  convertGuarded :: CST.Guarded Void -> Guarded
+  convertGuarded = case _ of
+    CST.Unconditional _ w -> Unconditional $ convertWhere w
+    CST.Guarded g -> Guarded $ convertGuardedExpr <$> g
+
+  convertGuardedExpr :: CST.GuardedExpr Void -> GuardedExpr
+  convertGuardedExpr (CST.GuardedExpr { patterns: Separated { head, tail }, "where": guardedWhere }) =
+    GuardedExpr
+      { patterns: NonEmptyArray.cons' (convertPatternGuard head)
+          (Tuple.snd >>> convertPatternGuard <$> tail)
+      , "where": convertWhere guardedWhere
+      }
+
+  convertPatternGuard :: CST.PatternGuard Void -> PatternGuard
+  convertPatternGuard (CST.PatternGuard { binder, expr }) = PatternGuard
+    { binder: Tuple.fst >>> convertBinder <$> binder, expression: convertExpr expr }
 
 data BinderKind
   -- Matches any pattern
