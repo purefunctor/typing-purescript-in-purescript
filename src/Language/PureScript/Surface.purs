@@ -6,6 +6,7 @@
 module Language.PureScript.Surface where
 
 import Prelude
+import Prim hiding (Type)
 
 import Control.Monad.State (State, execState, gets, modify_)
 import Data.Array as Array
@@ -20,11 +21,12 @@ import Data.Newtype (unwrap)
 import Data.Tuple (Tuple(..))
 import Data.Tuple as Tuple
 import Language.PureScript.Annotation (Annotation)
+import Language.PureScript.Constants (primFunction)
 import Language.PureScript.Constants as Constants
 import Language.PureScript.Names (QualifiedName, convertQualifiedName)
 import Partial.Unsafe (unsafeCrashWith)
 import PureScript.CST.Range (rangeOf)
-import PureScript.CST.Types (Ident, IntValue, Label, Labeled(..), Name(..), Operator, Proper, RecordLabeled, Separated(..), Wrapped(..))
+import PureScript.CST.Types (Ident, IntValue, Label, Labeled(..), Name(..), Operator, Proper, RecordLabeled, Row(..), Separated(..), Wrapped(..))
 import PureScript.CST.Types as CST
 
 data ExprKind
@@ -39,13 +41,15 @@ data ExprKind
   -- A ternary expression
   | ExprTernary TernaryFields
   -- A function application e.g. f a b
-  | ExprApp AppFields
+  | ExprApp (AppFields Expr)
   -- A lambda expression e.g. \x -> x
   | ExprLambda LambdaFields
   -- A case expression
   | ExprCase CaseFields
   -- A let expression
   | ExprLet LetFields
+  -- An annotated expression
+  | ExprTyped Expr Type
   -- A do block
   | ExprDo (NonEmptyArray DoStatement)
   -- An ado block
@@ -93,9 +97,9 @@ type TernaryFields =
   , else :: Expr
   }
 
-type AppFields =
-  { function :: Expr
-  , spine :: NonEmptyArray Expr
+type AppFields e =
+  { head :: e
+  , spine :: NonEmptyArray e
   }
 
 type LambdaFields =
@@ -229,7 +233,7 @@ convertExpr e = Expr { annotation, exprKind }
       ExprLiteral $ RecordLiteral $ fromMaybe [] $ convertRecord <$> value
     CST.ExprSection _ -> ExprSection
     CST.ExprParens (Wrapped { value }) -> ExprParens $ convertExpr value
-    CST.ExprTyped _ _ _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprTyped v _ t -> ExprTyped (convertExpr v) (convertType t)
     CST.ExprInfix head tail -> do
       let
         convertTail :: Tuple (Wrapped (CST.Expr Void)) (CST.Expr Void) -> Tuple Expr Expr
@@ -249,7 +253,7 @@ convertExpr e = Expr { annotation, exprKind }
         , tail: convertTail <$> tail
         }
     CST.ExprNegate n v -> ExprApp
-      { function: Expr
+      { head: Expr
           { annotation: { range: n.range }
           , exprKind: ExprVariable Constants.preludeNegate
           }
@@ -274,8 +278,8 @@ convertExpr e = Expr { annotation, exprKind }
         { record: convertExpr expr
         , update: convertUpdate update
         }
-    CST.ExprApp function spine -> ExprApp
-      { function: convertExpr function, spine: convertExpr <$> spine }
+    CST.ExprApp head spine -> ExprApp
+      { head: convertExpr head, spine: convertExpr <$> spine }
     CST.ExprLambda { binders, body } -> ExprLambda
       { binders: convertBinder <$> binders, expression: convertExpr body }
     CST.ExprCase { head: Separated { head, tail }, branches } -> do
@@ -338,7 +342,8 @@ convertExpr e = Expr { annotation, exprKind }
       _ | not $ M.isEmpty result.signatures ->
         unsafeCrashWith "Invariant violated: at least one LetBindingSignature remains"
       _ ->
-        unsafeCrashWith "Invariant violated: at least one LetBindingName or LetBindingPattern should occur"
+        unsafeCrashWith
+          "Invariant violated: at least one LetBindingName or LetBindingPattern should occur"
 
   convertWhere :: CST.Where Void -> Where
   convertWhere (CST.Where { expr, bindings }) = Where
@@ -384,7 +389,7 @@ data BinderKind
   -- Matches a parenthesized pattern
   | BinderParens Binder
   -- Matches a typed pattern
-  | BinderTyped Binder Void
+  | BinderTyped Binder Type
   -- Matches a chain of binary operations
   | BinderOp (OpFields Binder)
 
@@ -430,7 +435,7 @@ convertBinder b = Binder { annotation, kind }
           Array.cons (convertField head) (convertField <<< Tuple.snd <$> tail)
       BinderLiteral $ RecordLiteral $ fromMaybe [] $ convertRecord <$> value
     CST.BinderParens (Wrapped { value }) -> BinderParens $ convertBinder value
-    CST.BinderTyped _ _ _ -> unsafeCrashWith "Unimplemented!"
+    CST.BinderTyped v _ t -> BinderTyped (convertBinder v) (convertType t)
     CST.BinderOp head tail -> do
       let
         convertTail
@@ -442,3 +447,127 @@ convertBinder b = Binder { annotation, kind }
         , tail: convertTail <$> tail
         }
     CST.BinderError v -> absurd v
+
+data TypeKind
+  -- A type variable
+  = TypeVar Ident
+  -- A type constructor
+  | TypeConstructor (QualifiedName Proper)
+  -- An operator identifier
+  | TypeOperator (QualifiedName Operator)
+  -- A type wildcard
+  | TypeWildcard
+  -- A typed hole
+  | TypeHole Ident
+  -- A type-level string
+  | TypeString String
+  -- A type-level int
+  | TypeInt IntValue
+  -- A row type
+  | TypeRow RowFields
+  -- A record type
+  | TypeRecord RowFields
+  -- A universally quantified type
+  | TypeForall (NonEmptyArray TypeVarBinding) Type
+  -- A kind-annotated type
+  | TypeKinded Type Type
+  -- A type application
+  | TypeApp (AppFields Type)
+  -- A chain of binary type operations
+  | TypeOp (OpFields Type)
+  -- A function type e.g. a -> b
+  | TypeArrow Type Type
+  -- A type constrained by a type class
+  | TypeConstrained (NonEmptyArray (Tuple (QualifiedName Proper) (Array Type))) Type
+  -- A parenthesized type
+  | TypeParens Type
+
+type RowFields =
+  { labels :: Maybe (NonEmptyArray (Tuple Label Type))
+  , tail :: Maybe Type
+  }
+
+data TypeVarBinding
+  -- A kind-annotated type variable
+  = TypeVarKinded Ident Type
+  -- A type variable
+  | TypeVarName Ident
+
+newtype Type = Type
+  { annotation :: Annotation
+  , kind :: TypeKind
+  }
+
+convertType :: CST.Type Void -> Type
+convertType ty = Type { annotation, kind }
+  where
+  annotation :: Annotation
+  annotation = { range: rangeOf ty }
+
+  kind :: TypeKind
+  kind = case ty of
+    CST.TypeVar (Name { name }) -> TypeVar name
+    CST.TypeConstructor n -> TypeConstructor $ convertQualifiedName n
+    CST.TypeOpName n -> TypeOperator $ convertQualifiedName n
+    CST.TypeWildcard _ -> TypeWildcard
+    CST.TypeHole (Name { name }) -> TypeHole name
+    CST.TypeString _ v -> TypeString v
+    CST.TypeInt _ _ v -> TypeInt v
+    CST.TypeRow (Wrapped { value: Row { labels, tail } }) ->
+      TypeRow { labels: convertLabels <$> labels, tail: Tuple.snd >>> convertType <$> tail }
+    CST.TypeRecord (Wrapped { value: Row { labels, tail } }) ->
+      TypeRecord { labels: convertLabels <$> labels, tail: Tuple.snd >>> convertType <$> tail }
+    CST.TypeForall _ b _ t -> do
+      let
+        convertTypeVarBinding :: CST.TypeVarBinding Void -> TypeVarBinding
+        convertTypeVarBinding = case _ of
+          CST.TypeVarKinded (Wrapped { value: Labeled { label: Name { name }, value } }) ->
+            TypeVarKinded name (convertType value)
+          CST.TypeVarName (Name { name }) ->
+            TypeVarName name
+      TypeForall (convertTypeVarBinding <$> b) (convertType t)
+    CST.TypeKinded t _ k ->
+      TypeKinded (convertType t) (convertType k)
+    CST.TypeApp head spine ->
+      TypeApp { head: convertType head, spine: convertType <$> spine }
+    CST.TypeOp head tail -> do
+      let
+        convertTail
+          :: Tuple (CST.QualifiedName Operator) (CST.Type Void)
+          -> Tuple (QualifiedName Operator) Type
+        convertTail = bimap convertQualifiedName convertType
+      TypeOp { head: convertType head, tail: convertTail <$> tail }
+    CST.TypeArrow t _ u ->
+      TypeArrow (convertType t) (convertType u)
+    CST.TypeArrowName _ ->
+      TypeConstructor primFunction
+    CST.TypeConstrained c _ t -> do
+      let
+        parseClass :: CST.Type Void -> Tuple (QualifiedName Proper) (Array Type)
+        parseClass = case _ of
+          CST.TypeConstructor name -> 
+            Tuple (convertQualifiedName name) []
+          CST.TypeApp (CST.TypeConstructor name) spine -> 
+            Tuple (convertQualifiedName name) (convertType <$> NonEmptyArray.toArray spine)
+          _ ->
+            unsafeCrashWith "Invariant violated: failed to parse constraint"
+
+        parseClassUntil :: Array _ -> CST.Type Void -> TypeKind
+        parseClassUntil accumulator = case _ of
+          CST.TypeConstrained constraint _ deeper -> 
+            parseClassUntil (Array.snoc accumulator $ parseClass constraint) deeper
+          deeper ->
+            TypeConstrained (NonEmptyArray.cons' (parseClass c) accumulator) $ convertType deeper
+
+      parseClassUntil [] t
+    CST.TypeParens (Wrapped { value }) ->
+      TypeParens $ convertType value
+    CST.TypeError v -> absurd v
+
+  convertLabel :: Labeled (Name Label) (CST.Type Void) -> Tuple Label Type
+  convertLabel (Labeled { label: Name { name }, value }) = Tuple name (convertType value)
+
+  convertLabels
+    :: Separated (Labeled (Name Label) (CST.Type Void)) -> NonEmptyArray (Tuple Label Type)
+  convertLabels (Separated { head, tail }) = NonEmptyArray.cons' (convertLabel head)
+    (Tuple.snd >>> convertLabel <$> tail)
