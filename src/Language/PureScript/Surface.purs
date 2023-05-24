@@ -15,7 +15,7 @@ import Data.Bifunctor (bimap)
 import Data.Foldable (traverse_)
 import Data.Map (Map)
 import Data.Map as M
-import Data.Maybe (Maybe, fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Newtype (unwrap)
 import Data.Tuple (Tuple(..))
 import Data.Tuple as Tuple
@@ -109,7 +109,7 @@ type CaseFields =
   }
 
 type LetFields =
-  { bindings :: Array LetBinding
+  { bindings :: NonEmptyArray LetBinding
   , expression :: Expr
   }
 
@@ -128,7 +128,7 @@ type ValueBindingFields =
 
 newtype Where = Where
   { expression :: Expr
-  , bindings :: Maybe (Array LetBinding)
+  , bindings :: Maybe (NonEmptyArray LetBinding)
   }
 
 data Guarded
@@ -148,7 +148,7 @@ newtype PatternGuard = PatternGuard
   }
 
 data DoStatement
-  = DoLet (Array LetBinding)
+  = DoLet (NonEmptyArray LetBinding)
   | DoDiscard Expr
   | DoBind Binder Expr
 
@@ -304,7 +304,7 @@ convertExpr e = Expr { annotation, exprKind }
       ExprAdo { statements: convertDoStatement <$> statements, result: convertExpr result }
     CST.ExprError v -> absurd v
 
-  convertLetBindings :: NonEmptyArray (CST.LetBinding Void) -> Array LetBinding
+  convertLetBindings :: NonEmptyArray (CST.LetBinding Void) -> NonEmptyArray LetBinding
   convertLetBindings bindings = do
     let
       convertLetBinding :: CST.LetBinding Void -> State _ _
@@ -332,10 +332,13 @@ convertExpr e = Expr { annotation, exprKind }
       result = execState (traverse_ convertLetBinding $ NonEmptyArray.toArray bindings)
         { signatures: M.empty, bindings: [] }
 
-    if not $ M.isEmpty result.signatures then
-      unsafeCrashWith "Non-empty signatures"
-    else
-      result.bindings
+    case NonEmptyArray.fromArray result.bindings of
+      Just finalBindings | M.isEmpty result.signatures ->
+        finalBindings
+      _ | not $ M.isEmpty result.signatures ->
+        unsafeCrashWith "Invariant violated: at least one LetBindingSignature remains"
+      _ ->
+        unsafeCrashWith "Invariant violated: at least one LetBindingName or LetBindingPattern should occur"
 
   convertWhere :: CST.Where Void -> Where
   convertWhere (CST.Where { expr, bindings }) = Where
