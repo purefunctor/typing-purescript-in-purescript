@@ -7,10 +7,14 @@ module Language.PureScript.Surface where
 
 import Prelude
 
+import Control.Monad.State (State, execState, gets, modify_)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Bifunctor (bimap)
+import Data.Foldable (traverse_)
+import Data.Map (Map)
+import Data.Map as M
 import Data.Maybe (Maybe, fromMaybe)
 import Data.Newtype (unwrap)
 import Data.Tuple (Tuple)
@@ -20,7 +24,7 @@ import Language.PureScript.Constants as Constants
 import Language.PureScript.Names (QualifiedName, convertQualifiedName)
 import Partial.Unsafe (unsafeCrashWith)
 import PureScript.CST.Range (rangeOf)
-import PureScript.CST.Types (Ident, IntValue, Label, Name(..), Operator, Proper, RecordLabeled, Separated(..), Wrapped(..))
+import PureScript.CST.Types (Ident, IntValue, Label, Labeled(..), Name(..), Operator, Proper, RecordLabeled, Separated(..), Wrapped(..))
 import PureScript.CST.Types as CST
 
 data ExprKind
@@ -94,15 +98,13 @@ type LambdaFields =
   }
 
 type LetFields =
-  { bindings :: NonEmptyArray LetBinding
+  { bindings :: Array LetBinding
   , expression :: Expr
   }
 
 data LetBinding
-  -- A type signature
-  = LetBindingSignature Ident Void
   -- A value binding
-  | LetBindingName ValueBindingFields
+  = LetBindingName ValueBindingFields
   -- A pattern
   | LetBindingPattern Binder Where
 
@@ -110,11 +112,12 @@ type ValueBindingFields =
   { name :: Ident
   , binders :: Array Binder
   , guarded :: Guarded
+  , maybeType :: Maybe Unit
   }
 
 newtype Where = Where
   { expression :: Expr
-  , bindings :: Maybe (NonEmptyArray LetBinding)
+  , bindings :: Maybe (Array LetBinding)
   }
 
 data Guarded
@@ -256,22 +259,52 @@ convertExpr e = Expr { annotation, exprKind }
       { binders: convertBinder <$> binders, expression: convertExpr body }
     CST.ExprCase _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprLet { bindings, body } ->
-      ExprLet { bindings: convertLetBinding <$> bindings, expression: convertExpr body }
+      ExprLet
+        { bindings: convertLetBindings bindings
+        , expression: convertExpr body
+        }
     CST.ExprDo _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprAdo _ -> unsafeCrashWith "Unimplemented!"
     CST.ExprError v -> absurd v
 
-  convertLetBinding :: CST.LetBinding Void -> LetBinding
-  convertLetBinding = case _ of
-    CST.LetBindingSignature _ -> unsafeCrashWith "Unimplemented!"
-    CST.LetBindingName { name: Name { name }, binders, guarded } -> LetBindingName
-      { name, binders: convertBinder <$> binders, guarded: convertGuarded guarded }
-    CST.LetBindingPattern b _ w -> LetBindingPattern (convertBinder b) (convertWhere w)
-    CST.LetBindingError v -> absurd v
+  convertLetBindings :: NonEmptyArray (CST.LetBinding Void) -> Array LetBinding
+  convertLetBindings bindings = do
+    let
+      convertLetBinding :: CST.LetBinding Void -> State _ _
+      convertLetBinding = case _ of
+        CST.LetBindingSignature (Labeled { label: Name { name } }) ->
+          modify_ $ \s -> s { signatures = M.insert name unit s.signatures }
+        CST.LetBindingName { name: Name { name }, binders, guarded } -> do
+          maybeType <- gets (\s -> M.lookup name s.signatures)
+          modify_ $ \s -> s
+            { bindings = Array.snoc s.bindings $ LetBindingName
+                { name
+                , binders: convertBinder <$> binders
+                , guarded: convertGuarded guarded
+                , maybeType
+                }
+            }
+        CST.LetBindingPattern b _ w ->
+          modify_ $ \s -> s
+            { bindings = Array.snoc s.bindings
+                $ LetBindingPattern (convertBinder b) (convertWhere w)
+            }
+        CST.LetBindingError v -> absurd v
+
+      result :: { signatures :: Map Ident Unit, bindings :: Array LetBinding }
+      result = execState (traverse_ convertLetBinding $ NonEmptyArray.toArray bindings)
+        { signatures: M.empty, bindings: [] }
+
+    if not $ M.isEmpty result.signatures then
+      unsafeCrashWith "Non-empty signatures"
+    else
+      result.bindings
 
   convertWhere :: CST.Where Void -> Where
   convertWhere (CST.Where { expr, bindings }) = Where
-    { expression: convertExpr expr, bindings: (Tuple.snd >>> map convertLetBinding) <$> bindings }
+    { expression: convertExpr expr
+    , bindings: Tuple.snd >>> convertLetBindings <$> bindings
+    }
 
   convertGuarded :: CST.Guarded Void -> Guarded
   convertGuarded = case _ of
