@@ -17,7 +17,7 @@ import Data.Map (Map)
 import Data.Map as M
 import Data.Maybe (Maybe, fromMaybe)
 import Data.Newtype (unwrap)
-import Data.Tuple (Tuple)
+import Data.Tuple (Tuple(..))
 import Data.Tuple as Tuple
 import Language.PureScript.Annotation (Annotation)
 import Language.PureScript.Constants as Constants
@@ -42,6 +42,8 @@ data ExprKind
   | ExprApp AppFields
   -- A lambda expression e.g. \x -> x
   | ExprLambda LambdaFields
+  -- A case expression
+  | ExprCase CaseFields
   -- A let expression
   | ExprLet LetFields
   -- A record access e.g. x.foo.bar
@@ -95,6 +97,11 @@ type AppFields =
 type LambdaFields =
   { binders :: NonEmptyArray Binder
   , expression :: Expr
+  }
+
+type CaseFields =
+  { expressions :: NonEmptyArray Expr
+  , branches :: NonEmptyArray (Tuple (NonEmptyArray Binder) Guarded)
   }
 
 type LetFields =
@@ -257,7 +264,21 @@ convertExpr e = Expr { annotation, exprKind }
       { function: convertExpr function, spine: convertExpr <$> spine }
     CST.ExprLambda { binders, body } -> ExprLambda
       { binders: convertBinder <$> binders, expression: convertExpr body }
-    CST.ExprCase _ -> unsafeCrashWith "Unimplemented!"
+    CST.ExprCase { head: Separated { head, tail }, branches } -> do
+      let
+        convertBranch
+          :: Tuple (Separated (CST.Binder Void)) (CST.Guarded Void)
+          -> Tuple (NonEmptyArray Binder) Guarded
+        convertBranch (Tuple (Separated { head: binderHead, tail: binderTail }) guarded) =
+          Tuple
+            ( NonEmptyArray.cons' (convertBinder binderHead)
+                (Tuple.snd >>> convertBinder <$> binderTail)
+            )
+            (convertGuarded guarded)
+      ExprCase
+        { expressions: NonEmptyArray.cons' (convertExpr head) (Tuple.snd >>> convertExpr <$> tail)
+        , branches: convertBranch <$> branches
+        }
     CST.ExprLet { bindings, body } ->
       ExprLet
         { bindings: convertLetBindings bindings
